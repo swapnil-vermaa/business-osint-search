@@ -3,5 +3,5 @@ uvicorn[standard]
 requests
 beautifulsoup4
 lxml
-googlesearch-python
 python-dotenv
+ddgs
