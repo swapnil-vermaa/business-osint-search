@@ -1,7 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.logging_config import setup_logging
 from app.routers import search
+
+setup_logging()
 
 app = FastAPI(title="Business OSINT Search Engine")
 
