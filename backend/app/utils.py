@@ -1,9 +1,12 @@
 import re
+from difflib import SequenceMatcher
 from urllib.parse import urlparse
 
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 PHONE_REGEX = re.compile(r"(\+\d{1,3}[-.\s]?)?\(?\d{3,4}\)?[-.\s]\d{3,4}[-.\s]?\d{0,4}")
+SECTOR_PATTERN = re.compile(r"sector[\s-]*(\d+)", re.IGNORECASE)
 
+# Sirf ye 5 genuine social media platforms maane jaayenge
 PLATFORM_DOMAINS = {
     "linkedin.com": "LinkedIn",
     "facebook.com": "Facebook",
@@ -11,9 +14,6 @@ PLATFORM_DOMAINS = {
     "twitter.com": "X (Twitter)",
     "x.com": "X (Twitter)",
     "youtube.com": "YouTube",
-    "github.com": "GitHub",
-    "crunchbase.com": "Crunchbase",
-    "wikipedia.org": "Wikipedia",
 }
 
 REVIEW_DOMAINS = {
@@ -23,6 +23,36 @@ REVIEW_DOMAINS = {
     "indeed.com": "Indeed",
     "trustpilot.com": "Trustpilot",
     "ambitionbox.com": "AmbitionBox",
+    "zomato.com": "Zomato",
+    "justdial.com": "Justdial",
+    "magicpin.in": "MagicPin",
+    "eazydiner.com": "EazyDiner",
+    "practo.com": "Practo",
+    "tripadvisor.com": "TripAdvisor",
+    "yelp.com": "Yelp",
+}
+
+NON_BUSINESS_DOMAINS = {
+    "economictimes.indiatimes.com", "timesofindia.indiatimes.com",
+    "financialexpress.com", "hindustantimes.com", "alamy.com",
+    "freshersnow.com", "placementdrive.in", "alexahire.in",
+    "housing.com", "homebazaar.com", "dnb.com", "globaldata.com",
+    "rocketreach.co", "beststartup.in", "lawctopus.com", "signalhire.com",
+    "quora.com", "reddit.com", "pinterest.com", "wypages.com",
+    "punelist.com", "nativeplanet.com", "nobroker.in", "startupindiamagazine.com",
+}
+
+BUSINESS_TYPE_KEYWORDS = {
+    "Cafe": ["cafe", "café", "coffee"],
+    "Restaurant": ["restaurant", "dining", "cuisine", "eatery", "bistro"],
+    "Hotel": ["hotel", "resort", "guest house", "stay"],
+    "Salon & Spa": ["salon", "spa", "parlour", "parlor"],
+    "Gym & Fitness": ["gym", "fitness", "workout"],
+    "Hospital & Clinic": ["hospital", "clinic", "medical", "diagnostic"],
+    "Retail Store": ["store", "shop", "mart", "retail", "showroom"],
+    "IT / Software Company": ["software", "technologies", "it services", "tech solutions"],
+    "Education": ["school", "college", "institute", "academy", "coaching"],
+    "Real Estate": ["real estate", "properties", "builders", "realty"],
 }
 
 
@@ -36,7 +66,6 @@ def extract_phones(text: str) -> list[str]:
         value = match.group().strip()
         digits_only = re.sub(r"\D", "", value)
 
-        # date jaisa pattern reject karo (e.g. 20251215 se bana koi number)
         if re.match(r"^\d{4}\d{2}\d{2}$", digits_only):
             continue
 
@@ -54,8 +83,11 @@ def get_domain(url: str) -> str:
         return ""
 
 
-def is_pdf(url: str) -> bool:
-    return url.lower().endswith(".pdf")
+def get_path_length(url: str) -> int:
+    try:
+        return len(urlparse(url).path.strip("/"))
+    except Exception:
+        return 999
 
 
 def _domain_matches(domain: str, target: str) -> bool:
@@ -73,4 +105,55 @@ def is_review_site(domain: str):
     for d, source in REVIEW_DOMAINS.items():
         if _domain_matches(domain, d):
             return source
+    return None
+
+
+def is_probably_not_business_site(domain: str) -> bool:
+    return any(_domain_matches(domain, d) for d in NON_BUSINESS_DOMAINS)
+
+
+def extract_sector_number(text: str):
+    match = SECTOR_PATTERN.search(text)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def extract_all_sector_numbers(text: str) -> list[int]:
+    return [int(n) for n in SECTOR_PATTERN.findall(text)]
+
+
+def _similarity(a: str, b: str) -> float:
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def detect_business_type(text: str, fuzzy: bool = False):
+    text_lower = text.lower()
+
+    for category, keywords in BUSINESS_TYPE_KEYWORDS.items():
+        if any(keyword in text_lower for keyword in keywords):
+            return category
+
+    if not fuzzy:
+        return None
+
+    words = re.findall(r"[a-z]+", text_lower)
+    best_category = None
+    best_score = 0.0
+
+    for word in words:
+        if len(word) < 4:
+            continue
+        for category, keywords in BUSINESS_TYPE_KEYWORDS.items():
+            for keyword in keywords:
+                if len(keyword) < 4:
+                    continue
+                score = _similarity(word, keyword)
+                if score > best_score:
+                    best_score = score
+                    best_category = category
+
+    if best_score >= 0.8:
+        return best_category
+
     return None
