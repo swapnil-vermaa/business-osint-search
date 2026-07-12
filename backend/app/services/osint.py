@@ -1,3 +1,5 @@
+import logging
+
 from app.services.query_builder import build_queries
 from app.services.google_search import search_google
 from app.services.extractor import fetch_page
@@ -7,6 +9,8 @@ from app.utils import (
     extract_sector_number, extract_all_sector_numbers,
     detect_business_type,
 )
+
+logger = logging.getLogger(__name__)
 
 MAX_BUSINESS_CANDIDATES_TO_FETCH = 6
 
@@ -54,11 +58,20 @@ def _build_ai_summary(business_name, business_type, location, social_media, busi
 
 
 def run_osint_search(business_name: str, location: str, address: str = None) -> dict:
+    logger.info("=" * 60)
+    logger.info("Starting OSINT search: name=%r location=%r address=%r", business_name, location, address)
+
     queries = build_queries(business_name, location, address)
+    logger.info("Built %d queries", len(queries))
+    logger.debug("Queries: %s", queries)
 
     all_results = []
     for query in queries:
-        all_results.extend(search_google(query))
+        query_results = search_google(query)
+        logger.debug("Query %r → %d results", query, len(query_results))
+        all_results.extend(query_results)
+
+    logger.info("Collected %d raw results across all queries", len(all_results))
 
     seen_urls = set()
     unique_results = []
@@ -67,10 +80,13 @@ def run_osint_search(business_name: str, location: str, address: str = None) -> 
             seen_urls.add(item["url"])
             unique_results.append(item)
 
+    logger.info("Deduplicated: %d → %d unique results", len(all_results), len(unique_results))
+
     keywords = _get_business_keywords(business_name)
     target_sector = extract_sector_number(location) or (
         extract_sector_number(address) if address else None
     )
+    logger.debug("Keywords: %s | target_sector: %s", keywords, target_sector)
 
     # Sabse pehle: HAR result (chahe wo social ho, review ho, ya normal)
     # relevance check se guzarna zaroori hai
@@ -79,9 +95,12 @@ def run_osint_search(business_name: str, location: str, address: str = None) -> 
         if _is_relevant(item["url"], item["title"], item["snippet"], keywords, target_sector)
     ]
 
+    logger.info("Relevance filter: %d → %d results", len(unique_results), len(filtered_results))
+
     # Agar filter itna strict ho gaya ki kuch bacha hi nahi (bahut generic
     # business name ke case mein), toh safety net ke roop mein sab dikha do
     if not filtered_results:
+        logger.warning("Relevance filter removed everything — falling back to unfiltered results")
         filtered_results = unique_results
 
     social_seen = set()
@@ -120,6 +139,11 @@ def run_osint_search(business_name: str, location: str, address: str = None) -> 
                 "path_length": get_path_length(url),
             })
 
+    logger.info(
+        "Categorized: %d social, %d reviews, %d other",
+        len(social_media), len(reviews), len(other_results),
+    )
+
     search_results = [
         {"title": r["title"], "url": r["url"], "description": r["description"]}
         for r in other_results
@@ -131,6 +155,11 @@ def run_osint_search(business_name: str, location: str, address: str = None) -> 
         if r not in keyword_matches and not is_probably_not_business_site(r["domain"])
     ]
 
+    logger.info(
+        "Website candidates: %d keyword matches, %d fallback matches",
+        len(keyword_matches), len(fallback_matches),
+    )
+
     candidates = (
         sorted(keyword_matches, key=lambda x: x["path_length"])
         + sorted(fallback_matches, key=lambda x: x["path_length"])
@@ -141,6 +170,7 @@ def run_osint_search(business_name: str, location: str, address: str = None) -> 
     business_phone = None
 
     for candidate in candidates[:MAX_BUSINESS_CANDIDATES_TO_FETCH]:
+        logger.info("Fetching candidate: %s", candidate["url"])
         page_data = fetch_page(candidate["url"])
 
         if business_website is None:
@@ -148,11 +178,14 @@ def run_osint_search(business_name: str, location: str, address: str = None) -> 
 
         if business_email is None and page_data["emails"]:
             business_email = page_data["emails"][0]
+            logger.info("Found email: %s", business_email)
 
         if business_phone is None and page_data["phones"]:
             business_phone = page_data["phones"][0]
+            logger.info("Found phone: %s", business_phone)
 
         if business_email and business_phone:
+            logger.info("Both email and phone found — stopping candidate fetch early")
             break
 
     verified_website = business_website is not None and any(
@@ -169,6 +202,8 @@ def run_osint_search(business_name: str, location: str, address: str = None) -> 
     if business_type is None:
         business_type = detect_business_type(combined_text)
 
+    logger.info("Detected business_type: %s", business_type or "Not classified")
+
     snapshot = {
         "business_type": business_type or "Not classified",
         "location": address or location,
@@ -179,6 +214,13 @@ def run_osint_search(business_name: str, location: str, address: str = None) -> 
         business_name, business_type, address or location,
         social_media, business_website,
     )
+
+    logger.info(
+        "✅ Search complete — website=%s verified=%s email=%s phone=%s social=%d reviews=%d other=%d",
+        business_website, verified_website, bool(business_email), bool(business_phone),
+        len(social_media), len(reviews), len(search_results),
+    )
+    logger.info("=" * 60)
 
     return {
         "business": {
